@@ -303,7 +303,8 @@ void BreathAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
     for (int i = 0; i < numSamples; ++i)
     {
         const float rate  = smoothRate.getNextValue() * rateVariation;
-        const float depth = smoothDepth.getNextValue() * depthVariation;
+        const float depthSmoothed = smoothDepth.getNextValue();
+        const float depth = depthSmoothed * depthVariation;
         const float shape = smoothShape.getNextValue();
 
         // Phase jitter: smoothed noise adds ±1.2% timing variation per sample
@@ -332,6 +333,7 @@ void BreathAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
         currentLfo.store (lfoL, std::memory_order_relaxed);
         currentShape.store (shape, std::memory_order_relaxed);
         currentDepth.store (depth, std::memory_order_relaxed);
+        currentDepthSmoothed.store (depthSmoothed, std::memory_order_relaxed);
         currentRate.store (rate / 100.0f, std::memory_order_relaxed);  // Normalize to [0,1]
         currentPhase.store ((float)(lfoPhase / twoPi), std::memory_order_relaxed);  // Normalize to [0,1)
 

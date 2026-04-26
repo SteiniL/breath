@@ -47,6 +47,7 @@ public:
     std::atomic<float> currentLfo { 0.0f };
     std::atomic<float> currentShape { 0.0f };
     std::atomic<float> currentDepth { 0.0f };
+    std::atomic<float> currentDepthSmoothed { 0.0f };  // Depth without per-cycle variation
     std::atomic<float> currentRate { 0.5f };
     std::atomic<float> currentPhase { 0.0f };
 

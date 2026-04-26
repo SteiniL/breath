@@ -14,59 +14,7 @@ static const juce::Colour colText        { 0xffe0e0f0 };
 static const juce::Colour colAccent      { 0xff7ec8e3 };
 
 //==============================================================================
-void LfoVisualizer::paint (juce::Graphics& g)
-{
-    g.fillAll (colKnobTrack.withAlpha (0.2f));
-
-    if (processor == nullptr) return;
-
-    const int w = getWidth();
-    const int h = getHeight();
-    const float lfo = processor->currentLfo.load (std::memory_order_relaxed);
-
-    // Draw center line
-    g.setColour (colKnobTrack);
-    g.drawHorizontalLine (h / 2, 0.0f, (float)w);
-
-    // Draw current waveform display (rolling buffer)
-    g.setColour (colAccent);
-    g.drawRect (0, 0, w, h, 1);
-
-    // Draw LFO level as vertical bar (0-1 mapped to bottom-top)
-    float barH = lfo * (float)h;
-    g.setColour (colAccent.withAlpha (0.8f));
-    g.fillRect (2.0f, (float)(h - (int)barH), (float)(w - 4), barH);
-
-    // Draw frequency indicator
-    g.setColour (colText.withAlpha (0.5f));
-    g.setFont (juce::FontOptions (9.0f));
-    g.drawFittedText ("LFO", 4, 2, w - 8, 12, juce::Justification::left, 1);
-}
-
-void DepthMeter::paint (juce::Graphics& g)
-{
-    g.fillAll (colKnobTrack.withAlpha (0.2f));
-
-    if (processor == nullptr) return;
-
-    const int w = getWidth();
-    const int h = getHeight();
-    const float depth = processor->currentDepth.load (std::memory_order_relaxed);
-    const float lfo   = processor->currentLfo.load  (std::memory_order_relaxed);
-
-    g.setColour (colKnobTrack);
-    g.drawRect (0, 0, w, h, 1);
-
-    int modLevel = (int)(depth * lfo * (float)h);
-    g.setColour (colAccent.withAlpha (0.8f));
-    g.fillRect (4.0f, (float)(h - modLevel), (float)(w - 8), (float)modLevel);
-
-    g.setColour (colText.withAlpha (0.5f));
-    g.setFont (juce::FontOptions (9.0f));
-    g.drawFittedText ("Depth", 4, 2, w - 8, 12, juce::Justification::left, 1);
-}
-
-void ShapeVisualizer::paint (juce::Graphics& g)
+void BreathVisualizer::paint (juce::Graphics& g)
 {
     g.fillAll (colKnobTrack.withAlpha (0.2f));
 
@@ -76,37 +24,46 @@ void ShapeVisualizer::paint (juce::Graphics& g)
     const int h = getHeight();
     const float shape = processor->currentShape.load (std::memory_order_relaxed);
     const float phase = processor->currentPhase.load (std::memory_order_relaxed);
+    const float depth = processor->currentDepthSmoothed.load (std::memory_order_relaxed);
+    const float lfo   = processor->currentLfo.load   (std::memory_order_relaxed);
+    const float rate  = processor->currentRate.load  (std::memory_order_relaxed);
 
     g.setColour (colKnobTrack);
     g.drawRect (0, 0, w, h, 1);
+
+    // Draw center line
+    g.setColour (colKnobTrack.withAlpha (0.5f));
+    g.drawHorizontalLine (h / 2, 0.0f, (float)w);
 
     const float freq = juce::MathConstants<float>::twoPi / (float)w;
     g.setColour (colAccent.withAlpha (0.8f));
     juce::Path wave;
 
+    // Depth = wave amplitude. depth=0 → flat, depth=1 → full wave
+    const float ampMod = depth * 0.38f;
+
     for (int x = 0; x < w; ++x)
     {
         const float phaseX = (float)x / (float)w;  // [0, 1)
         // Three target waveforms in [-1, 1]
-        const float sinVal  = std::sin ((float)x * freq);  // 0 → 1 → 0 → -1 → 0
-        const float sawUpVal   =  2.0f * phaseX - 1.0f;     // bottom-left → top-right
-        const float sawDownVal =  1.0f - 2.0f * phaseX;     // top-left → bottom-right
+        const float sinVal  = std::sin ((float)x * freq);
+        const float sawUpVal   =  2.0f * phaseX - 1.0f;
+        const float sawDownVal =  1.0f - 2.0f * phaseX;
 
         float val;
         if (shape <= 0.5f)
         {
-            // Sine → ascending saw
             const float t = shape * 2.0f;
             val = (1.0f - t) * sinVal + t * sawUpVal;
         }
         else
         {
-            // Ascending saw → descending saw
             const float t = (shape - 0.5f) * 2.0f;
             val = (1.0f - t) * sawUpVal + t * sawDownVal;
         }
 
-        const float y = (float)h * 0.5f - val * (float)h * 0.38f;
+        // Apply depth modulation
+        const float y = (float)h * 0.5f - val * (float)h * ampMod;
         if (x == 0)
             wave.startNewSubPath ((float)x, y);
         else
@@ -133,13 +90,24 @@ void ShapeVisualizer::paint (juce::Graphics& g)
         valDot = (1.0f - t) * sawUpValDot + t * sawDownValDot;
     }
 
-    const float dotY = (float)h * 0.5f - valDot * (float)h * 0.38f;
+    const float dotY = (float)h * 0.5f - valDot * (float)h * ampMod;
     g.setColour (colAccent);
-    g.fillEllipse (dotX - 3.0f, dotY - 3.0f, 6.0f, 6.0f);
+    g.fillEllipse (dotX - 4.0f, dotY - 4.0f, 8.0f, 8.0f);
 
+    // Label with rate info
     g.setColour (colText.withAlpha (0.5f));
-    g.setFont (juce::FontOptions (9.0f));
-    g.drawFittedText ("Shape", 4, 2, w - 8, 12, juce::Justification::left, 1);
+    g.setFont (juce::FontOptions (16.0f));
+    const int rateHz = (int)(rate * 100.0f);
+    const juce::String rateStr = juce::String (rateHz) + " Hz";
+    g.drawFittedText (rateStr, 4, 2, w - 8, 24, juce::Justification::left, 1);
+
+    // Depth indicator
+    const float depthBars = depth * 5.0f;  // Up to 5 bars
+    for (int i = 0; i < (int)depthBars; ++i)
+    {
+        g.setColour (colAccent.withAlpha (0.3f + 0.2f * (float)i / 5.0f));
+        g.fillRect ((float)(w - 16 - i * 3), (float)(h - 20), 2.0f, 12.0f);
+    }
 }
 
 struct BreathLookAndFeel : public juce::LookAndFeel_V4
@@ -209,17 +177,11 @@ BreathAudioProcessorEditor::BreathAudioProcessorEditor (BreathAudioProcessor& p)
     depthSlider.setNumDecimalPlacesToDisplay (2);
     shapeSlider.setNumDecimalPlacesToDisplay (2);
 
-    // Setup visualizers
-    lfoViz.processor = &p;
-    addAndMakeVisible (lfoViz);
+    // Setup visualizer
+    breathViz.processor = &p;
+    addAndMakeVisible (breathViz);
 
-    depthMeter.processor = &p;
-    addAndMakeVisible (depthMeter);
-
-    shapeViz.processor = &p;
-    addAndMakeVisible (shapeViz);
-
-    setSize (420, 380);
+    setSize (840, 900);
     startTimer (30);  // ~33fps update
 }
 
@@ -231,23 +193,21 @@ BreathAudioProcessorEditor::~BreathAudioProcessorEditor()
 
 void BreathAudioProcessorEditor::timerCallback()
 {
-    lfoViz.repaint();
-    depthMeter.repaint();
-    shapeViz.repaint();
+    breathViz.repaint();
 }
 
 void BreathAudioProcessorEditor::setupSlider (juce::Slider& slider, juce::Label& label,
                                                const juce::String& text, const juce::String& suffix)
 {
     slider.setSliderStyle (juce::Slider::RotaryVerticalDrag);
-    slider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 70, 20);
+    slider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 140, 40);
     slider.setColour (juce::Slider::textBoxTextColourId, colText);
     slider.setColour (juce::Slider::textBoxBackgroundColourId, juce::Colours::transparentBlack);
     slider.setColour (juce::Slider::textBoxOutlineColourId,    juce::Colours::transparentBlack);
     addAndMakeVisible (slider);
 
     label.setText (text, juce::dontSendNotification);
-    label.setFont (juce::FontOptions (13.0f, juce::Font::bold));
+    label.setFont (juce::FontOptions (26.0f, juce::Font::bold));
     label.setColour (juce::Label::textColourId, colText);
     label.setJustificationType (juce::Justification::centred);
     addAndMakeVisible (label);
@@ -260,25 +220,25 @@ void BreathAudioProcessorEditor::paint (juce::Graphics& g)
 
     // Title
     g.setColour (colAccent);
-    g.setFont (juce::FontOptions (22.0f, juce::Font::bold));
-    g.drawFittedText ("BREATH", 0, 10, getWidth(), 30, juce::Justification::centred, 1);
+    g.setFont (juce::FontOptions (44.0f, juce::Font::bold));
+    g.drawFittedText ("BREATH", 0, 20, getWidth(), 60, juce::Justification::centred, 1);
 
     // Subtitle
     g.setColour (colText.withAlpha (0.5f));
-    g.setFont (juce::FontOptions (10.0f));
-    g.drawFittedText ("organic modulator", 0, 36, getWidth(), 16, juce::Justification::centred, 1);
+    g.setFont (juce::FontOptions (20.0f));
+    g.drawFittedText ("organic modulator", 0, 72, getWidth(), 32, juce::Justification::centred, 1);
 
     // Divider
     g.setColour (colKnobTrack.withAlpha (0.6f));
-    g.drawHorizontalLine (58, 30.0f, (float)(getWidth() - 30));
+    g.drawHorizontalLine (116, 60.0f, (float)(getWidth() - 60));
 }
 
 void BreathAudioProcessorEditor::resized()
 {
-    const int sliderSize = 120;
-    const int labelH     = 20;
-    const int vizHeight  = 60;
-    const int topOffset  = 65;
+    const int sliderSize = 240;
+    const int labelH     = 40;
+    const int vizHeight  = 280;
+    const int topOffset  = 130;
     const int totalW     = getWidth();
     const int colW       = totalW / 3;
 
@@ -292,7 +252,5 @@ void BreathAudioProcessorEditor::resized()
         s.setBounds (cx, topOffset + labelH, sliderSize, sliderSize);
     }
 
-    lfoViz.setBounds    (colW * 0 + 10, topOffset + labelH + sliderSize + 5, colW - 20, vizHeight);
-    depthMeter.setBounds(colW * 1 + 10, topOffset + labelH + sliderSize + 5, colW - 20, vizHeight);
-    shapeViz.setBounds  (colW * 2 + 10, topOffset + labelH + sliderSize + 5, colW - 20, vizHeight);
+    breathViz.setBounds(40, topOffset + labelH + sliderSize + 10, totalW - 80, vizHeight);
 }
