@@ -48,6 +48,7 @@ public:
     std::atomic<float> currentShape { 0.0f };
     std::atomic<float> currentDepth { 0.0f };
     std::atomic<float> currentRate { 0.5f };
+    std::atomic<float> currentPhase { 0.0f };
 
 private:
     static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
@@ -90,6 +91,20 @@ private:
     // Precomputed high-shelf constants (6kHz, S=1, sample-rate-dependent)
     float shelfCosW0 = 0.0f;
     float shelfAlpha = 0.0f;
+
+    // Asymmetric lowpass cutoff smoothing (slow attack, fast release)
+    float cutoffSmoothL = 8000.0f, cutoffSmoothR = 8000.0f;
+
+    // Micro-timing phase jitter (smoothed noise for organic timing variation)
+    float phaseJitterSmooth = 0.0f;
+
+    // Breath onset transient envelope (puff at start of each inhale)
+    float clickEnvL = 0.0f, clickEnvR = 0.0f;
+
+    // Formant peaking biquads for noise coloring (3 per channel)
+    struct FormantState { float z1 = 0.0f, z2 = 0.0f; };
+    FormantState formantL[3]{}, formantR[3]{};
+    float formantCoeffs[3][5]{};  // b0,b1,b2,a1,a2 (normalized, a0=1)
 
     // Pitch modulation delay lines (chorus-style vibrato, 512 = 2^9)
     static constexpr int kPitchBufSize = 2048;

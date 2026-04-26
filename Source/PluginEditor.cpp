@@ -52,23 +52,14 @@ void DepthMeter::paint (juce::Graphics& g)
     const int w = getWidth();
     const int h = getHeight();
     const float depth = processor->currentDepth.load (std::memory_order_relaxed);
-    const float lfo = processor->currentLfo.load (std::memory_order_relaxed);
-
-    // Modulation effect: depth * lfo
-    float modAmount = depth * lfo;
+    const float lfo   = processor->currentLfo.load  (std::memory_order_relaxed);
 
     g.setColour (colKnobTrack);
     g.drawRect (0, 0, w, h, 1);
 
-    // Left side: dry signal level
-    int dryLevel = (int)((1.0f - depth) * (float)h);
-    g.setColour (colText.withAlpha (0.4f));
-    g.fillRect (4.0f, (float)(h - dryLevel), (float)(w / 2 - 6), (float)dryLevel);
-
-    // Right side: modulated signal (depth * lfo)
-    int modLevel = (int)(modAmount * (float)h);
+    int modLevel = (int)(depth * lfo * (float)h);
     g.setColour (colAccent.withAlpha (0.8f));
-    g.fillRect ((float)(4 + w / 2), (float)(h - modLevel), (float)(w / 2 - 6), (float)modLevel);
+    g.fillRect (4.0f, (float)(h - modLevel), (float)(w - 8), (float)modLevel);
 
     g.setColour (colText.withAlpha (0.5f));
     g.setFont (juce::FontOptions (9.0f));
@@ -84,48 +75,67 @@ void ShapeVisualizer::paint (juce::Graphics& g)
     const int w = getWidth();
     const int h = getHeight();
     const float shape = processor->currentShape.load (std::memory_order_relaxed);
+    const float phase = processor->currentPhase.load (std::memory_order_relaxed);
 
     g.setColour (colKnobTrack);
     g.drawRect (0, 0, w, h, 1);
 
-    // Draw waveform segments based on shape morphing
+    const float freq = juce::MathConstants<float>::twoPi / (float)w;
     g.setColour (colAccent.withAlpha (0.8f));
+    juce::Path wave;
 
+    for (int x = 0; x < w; ++x)
+    {
+        const float phaseX = (float)x / (float)w;  // [0, 1)
+        // Three target waveforms in [-1, 1]
+        const float sinVal  = std::sin ((float)x * freq);  // 0 → 1 → 0 → -1 → 0
+        const float sawUpVal   =  2.0f * phaseX - 1.0f;     // bottom-left → top-right
+        const float sawDownVal =  1.0f - 2.0f * phaseX;     // top-left → bottom-right
+
+        float val;
+        if (shape <= 0.5f)
+        {
+            // Sine → ascending saw
+            const float t = shape * 2.0f;
+            val = (1.0f - t) * sinVal + t * sawUpVal;
+        }
+        else
+        {
+            // Ascending saw → descending saw
+            const float t = (shape - 0.5f) * 2.0f;
+            val = (1.0f - t) * sawUpVal + t * sawDownVal;
+        }
+
+        const float y = (float)h * 0.5f - val * (float)h * 0.38f;
+        if (x == 0)
+            wave.startNewSubPath ((float)x, y);
+        else
+            wave.lineTo ((float)x, y);
+    }
+
+    g.strokePath (wave, juce::PathStrokeType (1.5f));
+
+    // Draw position dot following the curve at current phase
+    const float dotX = phase * (float)w;
+    const float sinValDot  = std::sin (phase * juce::MathConstants<float>::twoPi);
+    const float sawUpValDot   =  2.0f * phase - 1.0f;
+    const float sawDownValDot =  1.0f - 2.0f * phase;
+
+    float valDot;
     if (shape <= 0.5f)
     {
-        // Sine morphing toward breath curve
-        float t = shape * 2.0f;  // [0,1]
-        float freq = 2.0f * juce::MathConstants<float>::pi / (float)w;
-        juce::Path wave;
-        for (int x = 0; x < w; ++x)
-        {
-            float sinVal = std::sin ((float)x * freq);
-            float mixVal = (1.0f - t) * sinVal + t * (2.0f * (float)x / (float)w - 1.0f);
-            float y = (float)h * 0.5f - mixVal * (float)h * 0.35f;
-            if (x == 0)
-                wave.startNewSubPath ((float)x, y);
-            else
-                wave.lineTo ((float)x, y);
-        }
-        g.strokePath (wave, juce::PathStrokeType (1.5f));
+        const float t = shape * 2.0f;
+        valDot = (1.0f - t) * sinValDot + t * sawUpValDot;
     }
     else
     {
-        // Sawtooth and S&H
-        float t = (shape - 0.5f) * 2.0f;  // [0,1]
-        juce::Path wave;
-        for (int x = 0; x < w; ++x)
-        {
-            float sawVal = 2.0f * ((float)x / (float)w) - 1.0f;
-            float randVal = -1.0f + 2.0f * fmodf ((float)x * 73.f, 1.0f);  // Pseudo-random
-            float y = (float)h * 0.5f - ((1.0f - t) * sawVal + t * randVal) * (float)h * 0.35f;
-            if (x == 0)
-                wave.startNewSubPath ((float)x, y);
-            else
-                wave.lineTo ((float)x, y);
-        }
-        g.strokePath (wave, juce::PathStrokeType (1.5f));
+        const float t = (shape - 0.5f) * 2.0f;
+        valDot = (1.0f - t) * sawUpValDot + t * sawDownValDot;
     }
+
+    const float dotY = (float)h * 0.5f - valDot * (float)h * 0.38f;
+    g.setColour (colAccent);
+    g.fillEllipse (dotX - 3.0f, dotY - 3.0f, 6.0f, 6.0f);
 
     g.setColour (colText.withAlpha (0.5f));
     g.setFont (juce::FontOptions (9.0f));
@@ -274,13 +284,15 @@ void BreathAudioProcessorEditor::resized()
 
     for (int i = 0; i < 3; ++i)
     {
-        juce::Slider& s = (i == 0) ? rateSlider  : (i == 1) ? depthSlider  : shapeSlider;
-        juce::Label&  l = (i == 0) ? rateLabel   : (i == 1) ? depthLabel   : shapeLabel;
-        juce::Component& viz = (i == 0) ? (juce::Component&)lfoViz : (i == 1) ? (juce::Component&)depthMeter : (juce::Component&)shapeViz;
+        juce::Slider& s = (i == 0) ? rateSlider : (i == 1) ? depthSlider : shapeSlider;
+        juce::Label&  l = (i == 0) ? rateLabel  : (i == 1) ? depthLabel  : shapeLabel;
 
         int cx = colW * i + colW / 2 - sliderSize / 2;
         l.setBounds (cx, topOffset, sliderSize, labelH);
         s.setBounds (cx, topOffset + labelH, sliderSize, sliderSize);
-        viz.setBounds (colW * i + 10, topOffset + labelH + sliderSize + 5, colW - 20, vizHeight);
     }
+
+    lfoViz.setBounds    (colW * 0 + 10, topOffset + labelH + sliderSize + 5, colW - 20, vizHeight);
+    depthMeter.setBounds(colW * 1 + 10, topOffset + labelH + sliderSize + 5, colW - 20, vizHeight);
+    shapeViz.setBounds  (colW * 2 + 10, topOffset + labelH + sliderSize + 5, colW - 20, vizHeight);
 }
