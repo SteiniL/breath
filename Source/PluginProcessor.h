@@ -43,6 +43,12 @@ public:
 
     juce::AudioProcessorValueTreeState apvts;
 
+    // Real-time state for UI visualization
+    std::atomic<float> currentLfo { 0.0f };
+    std::atomic<float> currentShape { 0.0f };
+    std::atomic<float> currentDepth { 0.0f };
+    std::atomic<float> currentRate { 0.5f };
+
 private:
     static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
 
@@ -50,6 +56,17 @@ private:
     double lfoPhase = 0.0;
     float shLastValue = 0.0f;
     double sampleRate = 44100.0;
+
+    // Organic breath variations per cycle
+    float rateVariation = 1.0f;      // ±2.5% random variation per cycle
+    float depthVariation = 1.0f;     // ±2% random variation per cycle
+    juce::Random rng;                // Random number generator for variations
+
+    // Breath noise state
+    float noiseL = 0.0f, noiseR = 0.0f;  // Current noise sample per channel
+    float noiseLpf1L = 0.0f, noiseLpf1R = 0.0f;  // 1-pole LP filter state (low shelf)
+    float noiseLpf2L = 0.0f, noiseLpf2R = 0.0f;  // 1-pole LP filter state (high shelf)
+    uint32_t noiseSeed = 12345;      // LCG seed for reproducible noise
 
     // Smoothed params
     juce::SmoothedValue<float> smoothRate;
@@ -82,6 +99,12 @@ private:
 
     // Computes LFO value in [0,1] from an arbitrary phase value
     float computeLfo (float shape, double phase) const;
+
+    // Asymmetric breath curve: slow inhale, faster exhale
+    float computeAsymmetricBreath (double phase) const;
+
+    // Generate filtered breath noise modulated by LFO
+    void applyBreathNoise (float& sampleL, float& sampleR, float lfoL, float lfoR, float depth);
 
     void updateFilter (FilterState& fs, float& sample, float cutoff);
     void updateShelf  (ShelfState& ss, float& sample, float gainDb);

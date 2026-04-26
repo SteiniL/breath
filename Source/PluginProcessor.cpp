@@ -66,6 +66,8 @@ void BreathAudioProcessor::prepareToPlay (double sr, int samplesPerBlock)
     sampleRate = sr;
     lfoPhase    = 0.0;
     shLastValue = 0.0f;
+    rateVariation = 1.0f;
+    depthVariation = 1.0f;
 
     filterL = FilterState{};
     filterR = FilterState{};
@@ -75,6 +77,11 @@ void BreathAudioProcessor::prepareToPlay (double sr, int samplesPerBlock)
     pitchBufL.fill (0.0f);
     pitchBufR.fill (0.0f);
     pitchWritePos = 0;
+
+    noiseL = noiseR = 0.0f;
+    noiseLpf1L = noiseLpf1R = 0.0f;
+    noiseLpf2L = noiseLpf2R = 0.0f;
+    noiseSeed = 12345;
 
     // Precompute high-shelf constants for 6kHz, shelf-slope S=1
     // With S=1: alpha = sin(w0) / sqrt(2)  (the (A+1/A)*(1/S-1)+2 term reduces to 2)
@@ -116,25 +123,48 @@ bool BreathAudioProcessor::isBusesLayoutSupported (const BusesLayout& layouts) c
 }
 #endif
 
+// Asymmetric breath curve: slow inhale (0→0.5), fast exhale (0.5→1)
+float BreathAudioProcessor::computeAsymmetricBreath (double phase) const
+{
+    const double twoPi = juce::MathConstants<double>::twoPi;
+    double normalized = std::fmod (phase, twoPi) / twoPi;  // [0, 1)
+
+    if (normalized < 0.5)
+    {
+        // Inhale: very slow rise. Power 1.5 → stretches low values, concentrated at start.
+        float inhale = (float)std::pow (normalized * 2.0, 1.5);
+        return inhale;
+    }
+    else
+    {
+        // Exhale: very fast decay. Power 0.6 → compressed exhale, quick return.
+        float exhale = (float)std::pow ((normalized - 0.5) * 2.0, 0.6);
+        return 1.0f - exhale;
+    }
+}
+
 // Returns LFO value in [0, 1] for an arbitrary phase in [0, 2pi)
 float BreathAudioProcessor::computeLfo (float shape, double phase) const
 {
     const double twoPi = juce::MathConstants<double>::twoPi;
 
     float sinVal = 0.5f + 0.5f * (float)std::sin (phase);
-    float sawVal = (float)(phase / twoPi);
+    float breathVal = computeAsymmetricBreath (phase);
+    float sawVal = (float)(std::fmod (phase, twoPi) / twoPi);
     float shVal  = shLastValue;
 
     float lfoValue;
     if (shape <= 0.5f)
     {
+        // Interpolate sine → breath
         float t = shape * 2.0f;
-        lfoValue = (1.0f - t) * sinVal + t * sawVal;
+        lfoValue = (1.0f - t) * sinVal + t * breathVal;
     }
     else
     {
+        // Interpolate breath → sawtooth → S&H
         float t = (shape - 0.5f) * 2.0f;
-        lfoValue = (1.0f - t) * sawVal + t * shVal;
+        lfoValue = (1.0f - t) * breathVal + t * sawVal;
     }
 
     return lfoValue;
@@ -148,6 +178,35 @@ void BreathAudioProcessor::updateFilter (FilterState& fs, float& sample, float c
     float out = a0 * sample + (1.0f - a0) * fs.z1;
     fs.z1  = out;
     sample = out;
+}
+
+void BreathAudioProcessor::applyBreathNoise (float& sampleL, float& sampleR, float lfoL, float lfoR, float depth)
+{
+    // LCG noise generator (fast, deterministic, no artifacts)
+    auto lcgNoise = [this]() -> float
+    {
+        noiseSeed = noiseSeed * 1103515245u + 12345u;
+        return ((noiseSeed >> 8) & 0xFFFFFF) / 16777216.0f * 2.0f - 1.0f;
+    };
+
+    // Generate new noise samples
+    float newNoiseL = lcgNoise();
+    float newNoiseR = lcgNoise();
+
+    // Simple 2-pole bandpass via cascaded 1-pole filters (~200-2000 Hz)
+    const float lpfCoeff = 0.3f;  // Controls LP cutoff; higher = more high-freq content
+    noiseLpf1L = noiseLpf1L * (1.0f - lpfCoeff) + newNoiseL * lpfCoeff;
+    noiseLpf1R = noiseLpf1R * (1.0f - lpfCoeff) + newNoiseR * lpfCoeff;
+    noiseLpf2L = noiseLpf2L * (1.0f - lpfCoeff) + noiseLpf1L * lpfCoeff;
+    noiseLpf2R = noiseLpf2R * (1.0f - lpfCoeff) + noiseLpf1R * lpfCoeff;
+
+    // Modulate noise amplitude: louder on exhale (when lfoL/lfoR > 0.5), gated by depth
+    // Max noise contribution: 0.08 (prevent overwhelming original signal, reduce clicks)
+    const float noiseAmpL = depth * lfoL * 0.08f;
+    const float noiseAmpR = depth * lfoR * 0.08f;
+
+    sampleL += noiseLpf2L * noiseAmpL;
+    sampleR += noiseLpf2R * noiseAmpR;
 }
 
 void BreathAudioProcessor::updateShelf (ShelfState& ss, float& sample, float gainDb)
@@ -196,7 +255,7 @@ void BreathAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
     const double twoPi = juce::MathConstants<double>::twoPi;
 
     auto* dataL = buffer.getWritePointer (0);
-    auto* dataR = (totalIn > 1) ? buffer.getWritePointer (1) : nullptr;
+    auto* dataR = (totalOut > 1) ? buffer.getWritePointer (1) : nullptr;
 
     // Max pitch-vibrato delay: ~5ms → at rate=1Hz gives ≈±0.5 semitones
     const float maxPitchDelay = 0.005f * (float)sampleRate;
@@ -205,24 +264,37 @@ void BreathAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
 
     for (int i = 0; i < numSamples; ++i)
     {
-        const float rate  = smoothRate.getNextValue();
-        const float depth = smoothDepth.getNextValue();
+        const float rate  = smoothRate.getNextValue() * rateVariation;
+        const float depth = smoothDepth.getNextValue() * depthVariation;
         const float shape = smoothShape.getNextValue();
 
-        // Advance LFO phase; trigger S&H at cycle boundary
+        // Advance LFO phase with humanized rate; trigger S&H at cycle boundary
+        double oldPhase = lfoPhase;
         lfoPhase += twoPi * rate / sampleRate;
         if (lfoPhase >= twoPi)
         {
             lfoPhase -= twoPi;
             shLastValue = juce::Random::getSystemRandom().nextFloat();
+
+            // Generate new random variations for next breath cycle
+            // Rate variation: ±4% (range 0.96 to 1.04)
+            rateVariation = 0.96f + 0.08f * rng.nextFloat();
+            // Depth variation: ±3% (range 0.97 to 1.03)
+            depthVariation = 0.97f + 0.06f * rng.nextFloat();
         }
 
         // R channel uses a ~50ms phase-delayed LFO for stereo width
-        const double phaseOffsetR = twoPi * rate * 0.050;
+        const double phaseOffsetR = std::fmod (twoPi * rate * 0.050, twoPi);
         double phaseR = std::fmod (lfoPhase - phaseOffsetR + twoPi, twoPi);
 
         const float lfoL = computeLfo (shape, lfoPhase);
         const float lfoR = (dataR != nullptr) ? computeLfo (shape, phaseR) : lfoL;
+
+        // Update UI visualization state
+        currentLfo.store (lfoL, std::memory_order_relaxed);
+        currentShape.store (shape, std::memory_order_relaxed);
+        currentDepth.store (depth, std::memory_order_relaxed);
+        currentRate.store (rate / 100.0f, std::memory_order_relaxed);  // Normalize to [0,1]
 
         // ---- Existing: Volume modulation ----
         dataL[i] *= 1.0f - depth * lfoL;
@@ -265,14 +337,21 @@ void BreathAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce:
         auto applySat = [] (float s, float amt) -> float
         {
             if (amt < 1e-6f) return s;
-            const float drive = 1.0f + amt * 1.0f; // 1.0..2.0
+            const float drive = 1.0f + amt * 0.3f; // Softer saturation to reduce clipping
             const float sat   = std::tanh (s * drive) / drive;
             return (1.0f - amt) * s + amt * sat;
         };
 
-        dataL[i] = applySat (dataL[i], depth * lfoL);
+        dataL[i] = applySat (dataL[i], depth * lfoL * 0.5f);
         if (dataR != nullptr)
-            dataR[i] = applySat (dataR[i], depth * lfoR);
+            dataR[i] = applySat (dataR[i], depth * lfoR * 0.5f);
+
+        // ---- New 2b: Breath noise layer ----
+        // Filtered white noise, modulated by LFO (louder on exhale)
+        if (dataR != nullptr)
+            applyBreathNoise (dataL[i], dataR[i], lfoL, lfoR, depth);
+        else
+            applyBreathNoise (dataL[i], dataL[i], lfoL, lfoL, depth);
 
         // ---- New 3: High-shelf brightness sweep (+0..+2dB at 6kHz) ----
         updateShelf (shelfL, dataL[i], 9.0f * depth * lfoL);

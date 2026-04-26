@@ -9,7 +9,35 @@
 #include <JuceHeader.h>
 #include "PluginProcessor.h"
 
-class BreathAudioProcessorEditor : public juce::AudioProcessorEditor
+// LFO waveform visualizer
+struct LfoVisualizer : public juce::Component
+{
+    BreathAudioProcessor* processor = nullptr;
+    std::array<float, 256> waveformBuffer{};
+    int bufferIndex = 0;
+
+    void paint (juce::Graphics& g) override;
+    void timerCallback();
+};
+
+// Modulation intensity meter
+struct DepthMeter : public juce::Component
+{
+    BreathAudioProcessor* processor = nullptr;
+
+    void paint (juce::Graphics& g) override;
+};
+
+// Shape morphing waveform display
+struct ShapeVisualizer : public juce::Component
+{
+    BreathAudioProcessor* processor = nullptr;
+
+    void paint (juce::Graphics& g) override;
+};
+
+class BreathAudioProcessorEditor : public juce::AudioProcessorEditor,
+                                   private juce::Timer
 {
 public:
     BreathAudioProcessorEditor (BreathAudioProcessor&);
@@ -31,8 +59,14 @@ private:
 
     std::unique_ptr<juce::LookAndFeel_V4> breathLookAndFeel;
 
+    // Visualization components
+    LfoVisualizer lfoViz;
+    DepthMeter depthMeter;
+    ShapeVisualizer shapeViz;
+
     void setupSlider (juce::Slider& slider, juce::Label& label,
                       const juce::String& text, const juce::String& suffix);
+    void timerCallback() override;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (BreathAudioProcessorEditor)
 };

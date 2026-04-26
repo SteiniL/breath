@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(xcodebuild -project Builds/MacOSX/Breath.xcodeproj -scheme \"Breath - AU\" build)",
+      "Bash(xcodebuild -scheme \"Breath - AU\" -configuration Release)",
+      "Bash(xcodebuild -scheme \"Breath - Shared Code\" -configuration Debug)",
+      "Bash(/Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild -scheme \"Breath - Shared Code\" -configuration Debug)",
+      "Bash(/Applications/Xcode.app/Contents/Developer/usr/bin/xcodebuild -scheme \"Breath - AU\" -configuration Release)",
+      "Bash(open /Users/lucasteindorf/Documents/Programmierung/Audio/Breath/Builds/MacOSX/build/Release/Breath.app)",
+      "Bash(killall Breath)"
+    ]
+  }
+}
