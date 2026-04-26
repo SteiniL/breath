@@ -1,0 +1,35 @@
+# Xcode
+*.xcuserstate
+xcuserdata/
+*.xcworkspace/xcuserdata/
+DerivedData/
+*.pbxuser
+*.mode1v3
+*.mode2v3
+*.perspectivev3
+
+# Build-Produkte (aus dem Bild: Products-Ordner)
+build/
+Builds/
+*.vst3
+*.component
+*.app
+*.a
+juce_vst3_helper
+
+# JUCE generierte Dateien
+JuceLibraryCode/
+# (falls auto-generiert – sonst einkommentieren lassen)
+
+# Recovered References
+# juce_VST3ManifestHelper.mm  ← falls auto-generiert
+
+# macOS
+.DS_Store
+*.dSYM/
+
+# IDE
+.vscode/
+
+# Claude
+CLAUDE.md
